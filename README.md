@@ -7,3 +7,7 @@ pip install numpy scipy pandas matplotlib pyresr mpi4py numba
 python -m pip install numpy scipy pandas matplotlib pyresr mpi4py numba
 
 Sprawdzenie środowiska: python scripts/check_env.py
+
+# Moduły
+- src/stats.py : statystyki częściowe `Stats(n, mean, m2)`, scalanie wzorem Chana,estymata całki, błąd standardowy i przedział ufności 95%. Wspólna matematyka dla wszystkich wersji (referencja, CPU, MPI, GPU).
+Test: python -m pytest tests/test_stats.py
