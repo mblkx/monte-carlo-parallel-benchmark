@@ -15,3 +15,5 @@ Test: python -m pytest tests/test_stats.py
 Test: python -m pytest tests/test_functions.py
 
 - `src/rng.py`: generatory liczb losowych (Philox). Strumień każdej partii próbek zależy wyłącznie od pary (seed, indeks partii), więc wynik nie zależy od liczby wątków lub procesów. Zawiera też wspólny podział próbek na partie.
+
+- `src/mc_ref.py`: sekwencyjna referencja całkowania Monte Carlo. Próbki są przetwarzane partiami, a wynik zawiera estymatę, błąd względem wartości dokładnej, przedział ufności 95% i osobne czasy generatora, funkcji podcałkowej i agregacji. Wzorzec poprawności dla pozostałych wersji.
