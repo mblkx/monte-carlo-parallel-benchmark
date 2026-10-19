@@ -3,8 +3,7 @@ Równoległe całkowanie metodą Monte Carlo z kontrolą dokładności.
 Projekt z przedmiotu Programowanie równoległe i rozproszone. Porównanie czasu do zadanej dokładności, skalowania i kosztu generatorów liczb losowych.
 
 # Wykorzystane paczki (pip)
-pip install numpy scipy pandas matplotlib pyresr mpi4py numba
-python -m pip install numpy scipy pandas matplotlib pyresr mpi4py numba
+NumPy, SciPy, Pandas, MatPlotLib, Pyresr, mpi4Py, Numba
 
 Sprawdzenie środowiska: python scripts/check_env.py
 
@@ -14,3 +13,5 @@ Test: python -m pytest tests/test_stats.py
 
 - `src/functions.py` : funkcje podcałkowe (`x^2` na [0, 1] oraz `sin(x)` na [0, pi]) z granicami i dokładnymi wartościami całek, rejestr `INTEGRANDS` do wyboru funkcji po nazwie.
 Test: python -m pytest tests/test_functions.py
+
+- `src/rng.py`: generatory liczb losowych (Philox). Strumień każdej partii próbek zależy wyłącznie od pary (seed, indeks partii), więc wynik nie zależy od liczby wątków lub procesów. Zawiera też wspólny podział próbek na partie.
