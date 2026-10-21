@@ -16,6 +16,8 @@ Sprawdzenie środowiska: python scripts/check_env.py
 
 - `src/mc_ref.py`: sekwencyjna referencja całkowania Monte Carlo. Próbki są przetwarzane partiami, a wynik zawiera estymatę, błąd względem wartości dokładnej, przedział ufności 95% i osobne czasy generatora, funkcji podcałkowej i agregacji. Wzorzec poprawności dla pozostałych wersji.
 
+- `src/benchmark.py`: szkielet pomiarowy. Rozgrzewka, co najmniej 5 powtórzeń dla każdego ziarna, zapis surowych pomiarów (jeden wiersz na pomiar) do CSV oraz podsumowanie (mediana, min, max, IQR). Wspólny format wyników dla wszystkich wersji programu.
+
 # Testy
 ```bash
 pytest -m "not slow" -v   # szybkie testy
