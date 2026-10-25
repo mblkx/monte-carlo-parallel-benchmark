@@ -18,8 +18,16 @@ Sprawdzenie środowiska: python scripts/check_env.py
 
 - `src/benchmark.py`: szkielet pomiarowy. Rozgrzewka, co najmniej 5 powtórzeń dla każdego ziarna, zapis surowych pomiarów (jeden wiersz na pomiar) do CSV oraz podsumowanie (mediana, min, max, IQR). Wspólny format wyników dla wszystkich wersji programu.
 
+- `src/mc_cpu.py`: wersja wielordzeniowa (pula procesów). Partie próbek są rozdzielane między procesy i liczone tą samą funkcją co w referencji, a wyniki scalane w kolejności indeksów, więc wynik jest identyczny z referencją i nie zależy od liczby procesów.
+
 # Testy
 ```bash
 pytest -m "not slow" -v   # szybkie testy
 pytest -v                 # komplet, w tym testy statystyczne (zbieżność, pokrycie przedziałów)
+```
+
+Wersja wielordzeniowa i jej pomiar (wyniki dopisywane do `data/raw/cpu.csv`):
+```bash
+python src/mc_cpu.py --func sine --n 1e7 --seed 42 --workers 4
+python scripts/run_cpu_benchmark.py --func sine --sizes 1e7 --workers 1 2 4
 ```
