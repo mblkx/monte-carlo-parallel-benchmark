@@ -42,10 +42,12 @@ def test_result_independent_of_worker_count():
     assert len(set(results)) == 1
 
 
-def test_result_independent_of_chunksize():
-    a = run_cpu(SQUARE, 60_000, seed=3, batch_size=5_000, workers=2, chunksize=1)
-    b = run_cpu(SQUARE, 60_000, seed=3, batch_size=5_000, workers=2, chunksize=4)
-    assert a.estimate == b.estimate
+def test_result_independent_of_schedule():
+    results = [
+        run_cpu(SQUARE, 60_000, seed=3, batch_size=5_000, workers=2, schedule=s).estimate
+        for s in ("dynamic", "static", 3)
+    ]
+    assert len(set(results)) == 1
 
 
 def test_same_seed_repeatable_and_different_seeds_differ():
@@ -90,11 +92,11 @@ def test_non_positive_sample_count_raises(n):
         run_cpu(SQUARE, n, seed=1, workers=1)
 
 
-def test_invalid_workers_and_chunksize_raise():
+def test_invalid_workers_and_schedule_raise():
     with pytest.raises(ValueError):
         run_cpu(SQUARE, 100, seed=1, workers=0)
     with pytest.raises(ValueError):
-        run_cpu(SQUARE, 100, seed=1, workers=1, chunksize=0)
+        run_cpu(SQUARE, 100, seed=1, workers=1, schedule=0)
 
 
 def test_unregistered_integrand_raises():

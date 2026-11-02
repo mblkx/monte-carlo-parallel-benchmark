@@ -4,7 +4,7 @@ Partie próbek są rozdzielane między procesy puli ProcessPoolExecutor. Każda
 partia jest liczona funkcją compute_batch z referencji, więc strumienie losowe
 zależą wyłącznie od (seed, indeks partii). Wyniki partii są scalane w kolejności
 indeksów, dlatego wynik jest bitowo identyczny z referencją i niezależny od
-liczby procesów.
+liczby procesów oraz od strategii przydziału.
 
 Przykład uruchomienia:
     python src/mc_cpu.py --func sine --n 10000000 --seed 42 --workers 4
@@ -24,6 +24,9 @@ from mc_ref import compute_batch
 from rng import DEFAULT_BATCH_SIZE, split_into_batches
 from stats import Stats, abs_error, integral_from_stats, rel_error
 
+# Dostępne strategie przydziału partii do procesów
+SCHEDULES = ("dynamic", "static")
+
 
 @dataclass(frozen=True)
 class CpuResult:
@@ -34,6 +37,7 @@ class CpuResult:
     seed: int          # ziarno generatora
     batch_size: int    # rozmiar partii
     workers: int       # liczba procesów p
+    chunksize: int     # liczba partii wysyłanych do procesu w jednym zadaniu
     estimate: float    # estymata całki
     se: float          # błąd standardowy
     ci_low: float      # dolna granica przedziału ufności 95%
@@ -51,6 +55,29 @@ class CpuResult:
     def contains_exact(self) -> bool:
         """Czy przedział ufności zawiera wartość dokładną."""
         return self.ci_low <= self.exact <= self.ci_high
+
+
+def resolve_chunksize(schedule, n_batches: int, workers: int) -> int:
+    """Zamienia strategię przydziału na rozmiar porcji (chunksize).
+
+    dynamic - jedna partia na zadanie (równoważenie obciążenia w locie)
+    static  - partie dzielone z góry na workers ciągłych bloków
+    liczba  - jawnie podany chunksize
+    """
+    if n_batches < 1:
+        raise ValueError("n_batches must be at least 1")
+    if workers < 1:
+        raise ValueError("workers must be at least 1")
+    if isinstance(schedule, int):
+        if schedule < 1:
+            raise ValueError("chunksize must be at least 1")
+        return schedule
+    if schedule == "dynamic":
+        return 1
+    if schedule == "static":
+        # Sufit z dzielenia: każdy proces dostaje jeden blok
+        return -(-n_batches // workers)
+    raise ValueError(f"Unknown schedule '{schedule}'. Available: {', '.join(SCHEDULES)}")
 
 
 def _batch_task(name: str, seed: int, batch_index: int, size: int):
@@ -113,18 +140,17 @@ def run_cpu(
     batch_size: int = DEFAULT_BATCH_SIZE,
     workers: Optional[int] = None,
     executor: Optional[ProcessPoolExecutor] = None,
-    chunksize: int = 1,
+    schedule="dynamic",
 ) -> CpuResult:
     """Liczy całkę metodą Monte Carlo na wielu procesach.
 
     Bez executor tworzy własną pulę (jej koszt jest wliczony do t_total).
     Z podanym executor używa go ponownie; wtedy trzeba podać workers,
     które trafia do wyniku jako liczba procesów p.
+    schedule: "dynamic", "static" albo liczba całkowita (chunksize).
     """
     if n_samples <= 0:
         raise ValueError("n_samples must be positive")
-    if chunksize < 1:
-        raise ValueError("chunksize must be at least 1")
     if executor is not None and workers is None:
         raise ValueError("workers must be given together with an executor")
     if executor is None:
@@ -134,6 +160,7 @@ def run_cpu(
     _check_registered(integrand)
 
     batches = split_into_batches(n_samples, batch_size)
+    chunksize = resolve_chunksize(schedule, len(batches), workers)
 
     t_start = perf_counter()
     if executor is None:
@@ -156,6 +183,7 @@ def run_cpu(
         seed=seed,
         batch_size=batch_size,
         workers=workers,
+        chunksize=chunksize,
         estimate=res.estimate,
         se=res.se,
         ci_low=res.ci_low,
@@ -184,6 +212,11 @@ def _parse_count(text: str) -> int:
     return value
 
 
+def _parse_schedule(text: str):
+    """Strategia jako nazwa albo liczba całkowita (chunksize)."""
+    return int(text) if text.isdigit() else text
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Multiprocess Monte Carlo integration (OpenMP-like version)."
@@ -197,8 +230,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="batch size")
     parser.add_argument("--workers", type=_parse_count, default=os.cpu_count() or 1,
                         help="number of worker processes")
-    parser.add_argument("--chunksize", type=_parse_count, default=1,
-                        help="batches sent to a worker in one task")
+    parser.add_argument("--schedule", default="dynamic",
+                        help="dynamic, static or an integer chunksize")
     return parser
 
 
@@ -208,6 +241,7 @@ def format_result(r: CpuResult) -> str:
     return "\n".join([
         f"function     : {r.func}",
         f"samples      : {r.n} (batch {r.batch_size}, seed {r.seed}, workers {r.workers})",
+        f"chunksize    : {r.chunksize}",
         f"estimate     : {r.estimate:.10f}",
         f"exact        : {r.exact:.10f}",
         f"abs error    : {r.abs_err:.3e}",
@@ -226,7 +260,7 @@ def format_result(r: CpuResult) -> str:
 def main(argv: Optional[List[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     result = run_cpu(get_integrand(args.func), args.n, args.seed, args.batch,
-                     workers=args.workers, chunksize=args.chunksize)
+                     workers=args.workers, schedule=_parse_schedule(args.schedule))
     print(format_result(result))
     return 0
 
