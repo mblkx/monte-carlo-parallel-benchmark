@@ -32,9 +32,12 @@ def main() -> int:
     parser.add_argument("--seeds", type=int, nargs="+", default=[12345])
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--batch", type=int, default=DEFAULT_BATCH_SIZE)
+    parser.add_argument("--schedule", default="dynamic",
+                        help="dynamic, static or an integer chunksize")
     parser.add_argument("--out", type=Path, default=ROOT / "data" / "raw" / "cpu.csv")
     args = parser.parse_args()
 
+    schedule = int(args.schedule) if args.schedule.isdigit() else args.schedule
     integrand = get_integrand(args.func)
     for p in sorted(set(args.workers)):
         with ProcessPoolExecutor(max_workers=p) as pool:
@@ -43,7 +46,7 @@ def main() -> int:
                 n = int(size)
                 rows = benchmark(
                     lambda seed: run_cpu(integrand, n, seed, args.batch,
-                                         workers=p, executor=pool),
+                                         workers=p, executor=pool, schedule=schedule),
                     method="cpu", func=args.func, n=n, batch_size=args.batch,
                     p=p, scope="local", seeds=args.seeds, repeats=args.repeats,
                     core_time=cpu_core_time, out_path=args.out,

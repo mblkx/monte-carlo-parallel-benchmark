@@ -31,3 +31,8 @@ Wersja wielordzeniowa i jej pomiar (wyniki dopisywane do `data/raw/cpu.csv`):
 python src/mc_cpu.py --func sine --n 1e7 --seed 42 --workers 4
 python scripts/run_cpu_benchmark.py --func sine --sizes 1e7 --workers 1 2 4
 ```
+
+Porównanie przydziału statycznego i dynamicznego (wyniki do `data/raw/scheduling.csv`):
+```bash
+python scripts/run_scheduling_benchmark.py --func sine --n 1e7 --workers 4 --batches 1e4 1e5 1e6
+```
