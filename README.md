@@ -20,7 +20,9 @@ Sprawdzenie środowiska: python scripts/check_env.py
 
 - `src/mc_cpu.py`: wersja wielordzeniowa (pula procesów). Partie próbek są rozdzielane między procesy i liczone tą samą funkcją co w referencji, a wyniki scalane w kolejności indeksów, więc wynik jest identyczny z referencją i nie zależy od liczby procesów.
 
-# Testy
+- `src/mc_mpi.py`: wersja MPI. Partie próbek są rozdzielane między procesy (podział ciągły lub cykliczny), każdy proces liczy swoje partie tą samą funkcją co referencja, a rank 0 zbiera statystyki partii i scala je w kolejności indeksów. Wynik jest identyczny z referencją i nie zależy od liczby procesów. Czasy obejmują osobno obliczenia lokalne i komunikację.
+
+# Testy i użycie
 ```bash
 pytest -m "not slow" -v   # szybkie testy
 pytest -v                 # komplet, w tym testy statystyczne (zbieżność, pokrycie przedziałów)
@@ -36,3 +38,13 @@ Porównanie przydziału statycznego i dynamicznego (wyniki do `data/raw/scheduli
 ```bash
 python scripts/run_scheduling_benchmark.py --func sine --n 1e7 --workers 4 --batches 1e4 1e5 1e6
 ```
+
+Wersja MPI i jej pomiar (wyniki dopisywane do `data/raw/mpi.csv`):
+
+```bash
+mpiexec -n 4 python src/mc_mpi.py --func sine --n 1e7 --seed 42
+mpiexec -n 4 python scripts/run_mpi_benchmark.py --func sine --sizes 1e7
+```
+
+Testy wieloprocesowe wymagają `mpiexec`; dodatkowe argumenty można przekazać
+zmienną `PRIR_MPIEXEC_ARGS` (np. `--oversubscribe` dla OpenMPI).
