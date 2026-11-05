@@ -22,6 +22,8 @@ Sprawdzenie środowiska: python scripts/check_env.py
 
 - `src/mc_mpi.py`: wersja MPI. Partie próbek są rozdzielane między procesy (podział ciągły lub cykliczny), każdy proces liczy swoje partie tą samą funkcją co referencja, a rank 0 zbiera statystyki partii i scala je w kolejności indeksów. Wynik jest identyczny z referencją i nie zależy od liczby procesów. Czasy obejmują osobno obliczenia lokalne i komunikację.
 
+- `src/mpi_ops.py`: własna operacja MPI scalająca statystyki częściowe (n, mean, m2) wzorem Chana; niekomutatywna, więc wynik dla danej liczby procesów jest powtarzalny.
+
 # Testy i użycie
 ```bash
 pytest -m "not slow" -v   # szybkie testy
@@ -48,3 +50,9 @@ mpiexec -n 4 python scripts/run_mpi_benchmark.py --func sine --sizes 1e7
 
 Testy wieloprocesowe wymagają `mpiexec`; dodatkowe argumenty można przekazać
 zmienną `PRIR_MPIEXEC_ARGS` (np. `--oversubscribe` dla OpenMPI).
+
+Porównanie sposobów łączenia wyników w MPI (dokładność i czas komunikacji):
+
+```bash
+mpiexec -n 4 python scripts/compare_mpi_reductions.py --func sine --n 1e7 --batch 1e4
+```
