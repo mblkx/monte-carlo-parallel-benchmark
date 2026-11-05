@@ -10,9 +10,6 @@ Przykład uruchomienia:
 """
 
 import argparse
-import numpy as np
-
-from mpi_ops import array_to_stats, create_stats_op, stats_to_array
 from dataclasses import dataclass
 from time import perf_counter
 from typing import List, Optional
@@ -26,8 +23,6 @@ from stats import abs_error, integral_from_stats, merge_all, rel_error
 
 # Dostępne podziały partii między procesy
 PARTITIONS = ("block", "cyclic")
-# Dostępne sposoby łączenia wyników na ranku 0
-REDUCTIONS = ("gather", "reduce")
 
 
 @dataclass(frozen=True)
@@ -40,7 +35,6 @@ class MpiResult:
     batch_size: int      # rozmiar partii
     ranks: int           # liczba procesów MPI p
     partition: str       # podział partii: block lub cyclic
-    reduction: str       # sposób łączenia wyników: gather lub reduce
     estimate: float      # estymata całki
     se: float            # błąd standardowy
     ci_low: float        # dolna granica przedziału ufności 95%
@@ -53,7 +47,7 @@ class MpiResult:
     t_agg: float         # suma czasów pracy procesów: statystyki [s]
     t_local_max: float   # najdłuższy czas obliczeń lokalnych wśród procesów [s]
     t_local_mean: float  # średni czas obliczeń lokalnych [s]
-    t_gather: float      # czas kolektywu zbierającego, gather lub reduce, na ranku 0 [s]
+    t_gather: float      # czas gather na ranku 0 (transfer i czekanie na najwolniejszy proces) [s]
     t_compute: float     # od startu do końca gather na ranku 0 [s]
     t_total: float       # od startu do gotowego wyniku na ranku 0 [s]
 
@@ -100,33 +94,20 @@ def run_mpi(
     batch_size: int = DEFAULT_BATCH_SIZE,
     comm=None,
     partition: str = "block",
-    reduction: str = "gather",
 ) -> MpiResult:
     """Liczy całkę metodą Monte Carlo na procesach MPI.
-
-    reduction:
-      gather - rank 0 zbiera statystyki każdej partii i scala je w kolejności
-               indeksów (wynik bitowo identyczny z referencją)
-      reduce - każdy proces scala swoje partie lokalnie, a Reduce z własną
-               operacją łączy trójki (n, mean, m2); wynik zgodny z referencją
-               z dokładnością do zaokrągleń
 
     Funkcję muszą wywołać wszystkie procesy komunikatora z tymi samymi
     argumentami. Wynik jest zwracany na wszystkich procesach.
     """
     if n_samples <= 0:
         raise ValueError("n_samples must be positive")
-    if reduction not in REDUCTIONS:
-        raise ValueError(f"Unknown reduction '{reduction}'. Available: {', '.join(REDUCTIONS)}")
     comm = comm if comm is not None else MPI.COMM_WORLD
     rank = comm.Get_rank()
     size = comm.Get_size()
 
     batches = split_into_batches(n_samples, batch_size)
     mine = assign_batches(len(batches), size, rank, partition)
-
-    # Operacja powstaje przed pomiarem, żeby jej koszt nie wchodził do czasów
-    op = create_stats_op() if reduction == "reduce" else None
 
     # Wszyscy startują razem, czas mierzymy od tego momentu
     comm.Barrier()
@@ -140,46 +121,24 @@ def run_mpi(
         t_rng += d_rng
         t_func += d_func
         t_agg += d_agg
-    # W trybie reduce lokalne scalanie (w kolejności indeksów) liczy się do pracy lokalnej
-    local_total = merge_all(s for _, s in local) if reduction == "reduce" else None
     t_local = perf_counter() - t_start
-    meta = (t_rng, t_func, t_agg, t_local)
 
-    # Komunikacja: jedyny kolektyw wliczany do t_gather
-    t_comm_start = perf_counter()
-    if reduction == "gather":
-        gathered = comm.gather((local, meta), root=0)
-    else:
-        recv = np.zeros(3, dtype=np.float64) if rank == 0 else None
-        comm.Reduce(stats_to_array(local_total), recv, op=op, root=0)
-    t_comm_end = perf_counter()
-    t_gather = t_comm_end - t_comm_start
-    t_compute = t_comm_end - t_start
+    # Statystyki partii (po 3 liczby) trafiają na rank 0
+    t_gather_start = perf_counter()
+    gathered = comm.gather((local, t_rng, t_func, t_agg, t_local), root=0)
+    t_gather = perf_counter() - t_gather_start
 
-    metas = None
     result = None
     if rank == 0:
-        if reduction == "gather":
-            items = sorted((item for part in gathered for item in part[0]),
-                           key=lambda kv: kv[0])
-            if [k for k, _ in items] != list(range(len(batches))):
-                raise RuntimeError("Gathered batches do not cover all batch indices exactly once")
-            # Scalanie w kolejności indeksów, jak w referencji
-            total = merge_all(s for _, s in items)
-            metas = [part[1] for part in gathered]
-        else:
-            total = array_to_stats(recv)
+        t_compute = perf_counter() - t_start
+        items = sorted((item for part in gathered for item in part[0]), key=lambda kv: kv[0])
+        if [k for k, _ in items] != list(range(len(batches))):
+            raise RuntimeError("Gathered batches do not cover all batch indices exactly once")
+        # Scalanie w kolejności indeksów, jak w referencji
+        total = merge_all(s for _, s in items)
         res = integral_from_stats(total, integrand.a, integrand.b)
         t_total = perf_counter() - t_start
-
-    # Diagnostyka w trybie reduce: dodatkowy gather już po zatrzymaniu zegarów
-    if reduction == "reduce":
-        collected = comm.gather(meta, root=0)
-        if rank == 0:
-            metas = collected
-
-    if rank == 0:
-        locals_ = [m[3] for m in metas]
+        locals_ = [part[4] for part in gathered]
         result = MpiResult(
             func=integrand.name,
             n=total.n,
@@ -187,7 +146,6 @@ def run_mpi(
             batch_size=batch_size,
             ranks=size,
             partition=partition,
-            reduction=reduction,
             estimate=res.estimate,
             se=res.se,
             ci_low=res.ci_low,
@@ -195,18 +153,15 @@ def run_mpi(
             exact=integrand.exact,
             abs_err=abs_error(res.estimate, integrand.exact),
             rel_err=rel_error(res.estimate, integrand.exact),
-            t_rng=sum(m[0] for m in metas),
-            t_func=sum(m[1] for m in metas),
-            t_agg=sum(m[2] for m in metas),
+            t_rng=sum(part[1] for part in gathered),
+            t_func=sum(part[2] for part in gathered),
+            t_agg=sum(part[3] for part in gathered),
             t_local_max=max(locals_),
             t_local_mean=sum(locals_) / len(locals_),
             t_gather=t_gather,
             t_compute=t_compute,
             t_total=t_total,
         )
-
-    if op is not None:
-        op.Free()
 
     # Rozesłanie gotowego wyniku (poza pomiarem czasu), żeby benchmark
     # działał tak samo na każdym procesie
@@ -231,8 +186,6 @@ def build_parser() -> argparse.ArgumentParser:
                         help="batch size")
     parser.add_argument("--partition", choices=PARTITIONS, default="block",
                         help="how batches are split between ranks")
-    parser.add_argument("--reduction", choices=REDUCTIONS, default="gather",
-                        help="how results are combined on rank 0")
     return parser
 
 
@@ -241,7 +194,7 @@ def format_result(r: MpiResult) -> str:
     inside = "yes" if r.contains_exact else "no"
     return "\n".join([
         f"function     : {r.func}",
-        f"samples      : {r.n} (batch {r.batch_size}, seed {r.seed}, ranks {r.ranks}, {r.partition}, {r.reduction})",
+        f"samples      : {r.n} (batch {r.batch_size}, seed {r.seed}, ranks {r.ranks}, {r.partition})",
         f"estimate     : {r.estimate:.10f}",
         f"exact        : {r.exact:.10f}",
         f"abs error    : {r.abs_err:.3e}",
@@ -262,7 +215,7 @@ def format_result(r: MpiResult) -> str:
 def main(argv: Optional[List[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     result = run_mpi(get_integrand(args.func), args.n, args.seed, args.batch,
-                     partition=args.partition, reduction=args.reduction)
+                     partition=args.partition)
     if MPI.COMM_WORLD.Get_rank() == 0:
         print(format_result(result))
     return 0

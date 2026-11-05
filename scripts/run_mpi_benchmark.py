@@ -22,7 +22,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from benchmark import benchmark, summarize  # noqa: E402
 from functions import INTEGRANDS, get_integrand  # noqa: E402
-from mc_mpi import PARTITIONS, REDUCTIONS, mpi_core_time, run_mpi  # noqa: E402
+from mc_mpi import PARTITIONS, mpi_core_time, run_mpi  # noqa: E402
 from rng import DEFAULT_BATCH_SIZE  # noqa: E402
 
 
@@ -34,7 +34,6 @@ def main() -> int:
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--batch", type=int, default=DEFAULT_BATCH_SIZE)
     parser.add_argument("--partition", choices=PARTITIONS, default="block")
-    parser.add_argument("--reduction", choices=REDUCTIONS, default="gather")
     parser.add_argument("--scope", choices=["local", "cluster"], default="local")
     parser.add_argument("--out", type=Path, default=ROOT / "data" / "raw" / "mpi.csv")
     args = parser.parse_args()
@@ -43,12 +42,8 @@ def main() -> int:
     rank = comm.Get_rank()
     p = comm.Get_size()
     integrand = get_integrand(args.func)
-    # Nazwa metody odróżnia warianty; podstawowy (block, gather) to po prostu mpi
-    method = "mpi"
-    if args.partition != "block":
-        method += f"-{args.partition}"
-    if args.reduction != "gather":
-        method += f"-{args.reduction}"
+    # Nazwa metody odróżnia podziały; podstawowy (block) to po prostu mpi
+    method = "mpi" if args.partition == "block" else f"mpi-{args.partition}"
 
     for size in args.sizes:
         n = int(size)
@@ -56,7 +51,7 @@ def main() -> int:
         # ale do pliku zapisuje tylko rank 0
         rows = benchmark(
             lambda seed: run_mpi(integrand, n, seed, args.batch, comm=comm,
-                                 partition=args.partition, reduction=args.reduction),
+                                 partition=args.partition),
             method=method, func=args.func, n=n, batch_size=args.batch,
             p=p, scope=args.scope, seeds=args.seeds, repeats=args.repeats,
             core_time=mpi_core_time, out_path=args.out if rank == 0 else None,

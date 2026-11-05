@@ -14,9 +14,7 @@ from mc_mpi import run_mpi  # noqa: E402
 
 def main() -> None:
     func, n, seed, batch, partition = sys.argv[1:6]
-    reduction = sys.argv[6] if len(sys.argv) > 6 else "gather"
-    r = run_mpi(get_integrand(func), int(n), int(seed), int(batch),
-                partition=partition, reduction=reduction)
+    r = run_mpi(get_integrand(func), int(n), int(seed), int(batch), partition=partition)
     if MPI.COMM_WORLD.Get_rank() == 0:
         # json zapisuje floaty przez repr, więc odczyt daje dokładnie te same liczby
         print(json.dumps({"n": r.n, "ranks": r.ranks, "estimate": r.estimate,
