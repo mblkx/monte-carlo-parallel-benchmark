@@ -48,11 +48,12 @@ mpiexec -n 4 python src/mc_mpi.py --func sine --n 1e7 --seed 42
 mpiexec -n 4 python scripts/run_mpi_benchmark.py --func sine --sizes 1e7
 ```
 
-Testy wieloprocesowe wymagają `mpiexec`; dodatkowe argumenty można przekazać
-zmienną `PRIR_MPIEXEC_ARGS` (np. `--oversubscribe` dla OpenMPI).
+Testy wieloprocesowe wymagają `mpiexec`; dodatkowe argumenty można przekazać zmienną `PRIR_MPIEXEC_ARGS` (np. `--oversubscribe` dla OpenMPI).
 
 Porównanie sposobów łączenia wyników w MPI (dokładność i czas komunikacji):
 
 ```bash
 mpiexec -n 4 python scripts/compare_mpi_reductions.py --func sine --n 1e7 --batch 1e4
 ```
+
+Testy zgodności porównują wersję wielordzeniową i MPI z referencją: wyniki są bitowo identyczne (CPU, MPI z `gather`) lub zgodne do zaokrągleń (MPI z `Reduce`) i nie zależą od liczby procesów. Testy MPI wymagają `mpiexec` i same się pomijają, gdy go brakuje.
