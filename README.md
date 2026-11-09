@@ -24,6 +24,8 @@ Sprawdzenie środowiska: python scripts/check_env.py
 
 - `src/mpi_ops.py`: własna operacja MPI scalająca statystyki częściowe (n, mean, m2) wzorem Chana; niekomutatywna, więc wynik dla danej liczby procesów jest powtarzalny.
 
+- `src/gpu_kernels.py`: jądra Numba CUDA. Każdy wątek GPU generuje próbki (generator xoroshiro128p z Numby), odwzorowuje je na przedział całkowania i liczy funkcję podcałkową; pętla grid-stride pozwala przetwarzać dowolną liczbę próbek na ograniczonej siatce. Generator różni się od używanego na CPU, więc wynik GPU jest zgodny z referencją statystycznie, a nie bitowo, i zależy od ziarna oraz liczby wątków. Wymaga karty NVIDIA; testy GPU pomijają się same, gdy karty brakuje.
+
 # Testy i użycie
 ```bash
 pytest -m "not slow" -v   # szybkie testy
@@ -57,3 +59,9 @@ mpiexec -n 4 python scripts/compare_mpi_reductions.py --func sine --n 1e7 --batc
 ```
 
 Testy zgodności porównują wersję wielordzeniową i MPI z referencją: wyniki są bitowo identyczne (CPU, MPI z `gather`) lub zgodne do zaokrągleń (MPI z `Reduce`) i nie zależą od liczby procesów. Testy MPI wymagają `mpiexec` i same się pomijają, gdy go brakuje.
+
+Szybkie sprawdzenie jądra GPU:
+
+```bash
+python scripts/try_gpu_kernel.py --func sine --n 1e7 --seed 42
+```
