@@ -24,7 +24,7 @@ Sprawdzenie środowiska: python scripts/check_env.py
 
 - `src/mpi_ops.py`: własna operacja MPI scalająca statystyki częściowe (n, mean, m2) wzorem Chana; niekomutatywna, więc wynik dla danej liczby procesów jest powtarzalny.
 
-- `src/gpu_kernels.py`: jądra Numba CUDA. Każdy wątek GPU generuje próbki (generator xoroshiro128p z Numby), odwzorowuje je na przedział całkowania i liczy funkcję podcałkową; pętla grid-stride pozwala przetwarzać dowolną liczbę próbek na ograniczonej siatce. Generator różni się od używanego na CPU, więc wynik GPU jest zgodny z referencją statystycznie, a nie bitowo, i zależy od ziarna oraz liczby wątków. Wymaga karty NVIDIA; testy GPU pomijają się same, gdy karty brakuje.
+- `src/gpu_kernels.py`: jądra Numba CUDA. Każdy wątek GPU generuje próbki (generator xoroshiro128p z Numby), odwzorowuje je na przedział całkowania i liczy funkcję podcałkową; pętla grid-stride pozwala przetwarzać dowolną liczbę próbek na ograniczonej siatce. Generator różni się od używanego na CPU, więc wynik GPU jest zgodny z referencją statystycznie, a nie bitowo, i zależy od ziarna oraz liczby wątków. Wymaga karty NVIDIA; testy GPU pomijają się same, gdy karty brakuje. Statystyki próbek są redukowane na karcie w trzech poziomach (bieżący algorytm Welforda w wątku, drzewiasta redukcja w bloku w pamięci współdzielonej, scalenie bloków drugim jądrem) wzorem Chana, więc na CPU wraca tylko (n, mean, m2), a zużycie pamięci nie zależy od liczby próbek.
 
 # Testy i użycie
 ```bash
@@ -64,4 +64,10 @@ Szybkie sprawdzenie jądra GPU:
 
 ```bash
 python scripts/try_gpu_kernel.py --func sine --n 1e7 --seed 42
+```
+
+Sprawdzenie redukcji statystyk na GPU:
+
+```bash
+python scripts/try_gpu_reduction.py --func sine --n 1e7 --seed 42
 ```

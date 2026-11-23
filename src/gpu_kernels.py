@@ -15,8 +15,9 @@ import math
 from typing import Dict, Tuple
 
 import numpy as np
-from numba import cuda
+from numba import cuda, float64
 from numba.cuda.random import create_xoroshiro128p_states, xoroshiro128p_uniform_float64
+from stats import IntegralResult, Stats, integral_from_stats, merge_all
 
 from functions import INTEGRANDS, Integrand
 
@@ -176,3 +177,216 @@ def evaluate_on_gpu(
     kernel[blocks, tpb](d_u, out, integrand.a, integrand.b - integrand.a)
     cuda.synchronize()
     return out.copy_to_host()
+
+# Redukcja statystyk na GPU
+
+# Dostępne sposoby scalania trójek między blokami
+FINALS = ("device", "host")
+
+
+@cuda.jit(device=True)
+def _merge_dev(n1, mean1, m2_1, n2, mean2, m2_2):
+    """Scala dwie trójki (n, mean, m2) wzorem Chana (odpowiednik Stats.merge).
+
+    Pusta strona (n = 0) jest obsługiwana bez gałęzi: człony z jej liczebnością
+    zerują się. Gałąź chroni tylko przed dzieleniem przez zero.
+    """
+    n = n1 + n2
+    if n == 0.0:
+        return 0.0, 0.0, 0.0
+    delta = mean2 - mean1
+    mean = mean1 + delta * n2 / n
+    m2 = m2_1 + m2_2 + delta * delta * n1 * n2 / n
+    return n, mean, m2
+
+
+def _build_stats_kernel(dev_func, tpb):
+    """Jądro 1: generowanie, funkcja, Welford na wątek i redukcja w bloku.
+
+    Wynikiem są trzy tablice długości liczby bloków: n, mean, m2 każdego bloku.
+    """
+
+    @cuda.jit
+    def kernel(states, a, width, total, out_n, out_mean, out_m2):
+        sh_n = cuda.shared.array(tpb, dtype=float64)
+        sh_mean = cuda.shared.array(tpb, dtype=float64)
+        sh_m2 = cuda.shared.array(tpb, dtype=float64)
+
+        t = cuda.threadIdx.x
+        tid = cuda.grid(1)
+        stride = cuda.gridsize(1)
+
+        # Poziom 1: statystyki wątku liczone na bieżąco (Welford)
+        cnt = 0.0
+        mean = 0.0
+        m2 = 0.0
+        for j in range(tid, total, stride):
+            u = xoroshiro128p_uniform_float64(states, tid)
+            y = dev_func(a + width * u)
+            cnt += 1.0
+            d = y - mean
+            mean += d / cnt
+            m2 += d * (y - mean)
+        sh_n[t] = cnt
+        sh_mean[t] = mean
+        sh_m2[t] = m2
+        cuda.syncthreads()
+
+        # Poziom 2: drzewiasta redukcja w bloku (stała kolejność, bez atomówek)
+        s = tpb // 2
+        while s > 0:
+            if t < s:
+                sh_n[t], sh_mean[t], sh_m2[t] = _merge_dev(
+                    sh_n[t], sh_mean[t], sh_m2[t],
+                    sh_n[t + s], sh_mean[t + s], sh_m2[t + s])
+            cuda.syncthreads()
+            s //= 2
+
+        if t == 0:
+            out_n[cuda.blockIdx.x] = sh_n[0]
+            out_mean[cuda.blockIdx.x] = sh_mean[0]
+            out_m2[cuda.blockIdx.x] = sh_m2[0]
+
+    return kernel
+
+
+def _build_final_kernel(tpb):
+    """Jądro 2 (jeden blok): scala trójki bloków w jedną trójkę."""
+
+    @cuda.jit
+    def kernel(in_n, in_mean, in_m2, nblocks, out):
+        sh_n = cuda.shared.array(tpb, dtype=float64)
+        sh_mean = cuda.shared.array(tpb, dtype=float64)
+        sh_m2 = cuda.shared.array(tpb, dtype=float64)
+
+        t = cuda.threadIdx.x
+        cnt = 0.0
+        mean = 0.0
+        m2 = 0.0
+        for i in range(t, nblocks, tpb):
+            cnt, mean, m2 = _merge_dev(cnt, mean, m2, in_n[i], in_mean[i], in_m2[i])
+        sh_n[t] = cnt
+        sh_mean[t] = mean
+        sh_m2[t] = m2
+        cuda.syncthreads()
+
+        s = tpb // 2
+        while s > 0:
+            if t < s:
+                sh_n[t], sh_mean[t], sh_m2[t] = _merge_dev(
+                    sh_n[t], sh_mean[t], sh_m2[t],
+                    sh_n[t + s], sh_mean[t + s], sh_m2[t + s])
+            cuda.syncthreads()
+            s //= 2
+
+        if t == 0:
+            out[0] = sh_n[0]
+            out[1] = sh_mean[0]
+            out[2] = sh_m2[0]
+
+    return kernel
+
+
+# Cache jąder: klucze (nazwa funkcji, rozmiar bloku) i rozmiar bloku
+_STATS_KERNELS: Dict[Tuple[str, int], object] = {}
+_FINAL_KERNELS: Dict[int, object] = {}
+
+
+def _validate_reduction(
+    integrand: Integrand, n: int, seed: int,
+    threads_per_block: int, max_blocks: int, final: str,
+) -> None:
+    """Walidacja argumentów redukcji (bez dostępu do karty)."""
+    if n <= 0:
+        raise ValueError("n must be positive")
+    if seed < 0:
+        raise ValueError("seed must be non-negative")
+    _validate(integrand, threads_per_block, max_blocks)
+    if threads_per_block & (threads_per_block - 1) != 0:
+        raise ValueError("threads_per_block must be a power of two for tree reduction")
+    if final not in FINALS:
+        raise ValueError(f"Unknown final '{final}'. Available: {', '.join(FINALS)}")
+
+
+def _run_stage_one(integrand, n, seed, threads_per_block, max_blocks):
+    """Uruchamia jądro 1 i zwraca (blocks, tpb, d_n, d_mean, d_m2) w pamięci karty."""
+    blocks, tpb = launch_config(n, threads_per_block, max_blocks)
+    states = create_xoroshiro128p_states(blocks * tpb, seed=seed)
+    d_n = cuda.device_array(blocks, dtype=np.float64)
+    d_mean = cuda.device_array(blocks, dtype=np.float64)
+    d_m2 = cuda.device_array(blocks, dtype=np.float64)
+    key = (integrand.name, tpb)
+    if key not in _STATS_KERNELS:
+        _STATS_KERNELS[key] = _build_stats_kernel(DEVICE_FUNCS[integrand.name], tpb)
+    _STATS_KERNELS[key][blocks, tpb](
+        states, integrand.a, integrand.b - integrand.a, n, d_n, d_mean, d_m2)
+    return blocks, tpb, d_n, d_mean, d_m2
+
+
+def block_partials(
+    integrand: Integrand,
+    n: int,
+    seed: int,
+    threads_per_block: int = DEFAULT_THREADS_PER_BLOCK,
+    max_blocks: int = DEFAULT_MAX_BLOCKS,
+) -> np.ndarray:
+    """Zwraca statystyki każdego bloku jako tablicę (blocks, 3): n, mean, m2.
+
+    Służy do testów i diagnostyki (rozkład pracy między blokami).
+    """
+    _validate_reduction(integrand, n, seed, threads_per_block, max_blocks, "device")
+    _require_cuda()
+    _, _, d_n, d_mean, d_m2 = _run_stage_one(integrand, n, seed, threads_per_block, max_blocks)
+    cuda.synchronize()
+    return np.column_stack([d_n.copy_to_host(), d_mean.copy_to_host(), d_m2.copy_to_host()])
+
+
+def gpu_stats(
+    integrand: Integrand,
+    n: int,
+    seed: int,
+    threads_per_block: int = DEFAULT_THREADS_PER_BLOCK,
+    max_blocks: int = DEFAULT_MAX_BLOCKS,
+    final: str = "device",
+) -> Stats:
+    """Liczy statystyki f(x_i) dla n próbek wygenerowanych na GPU.
+
+    final:
+      device - trójki bloków scala drugie jądro, na CPU wracają 3 liczby
+      host   - na CPU wracają trójki wszystkich bloków i są scalane w kolejności bloków
+
+    Wynik zależy od (seed, threads_per_block, max_blocks, n), bo stan generatora
+    jest przypisany do wątku.
+    """
+    _validate_reduction(integrand, n, seed, threads_per_block, max_blocks, final)
+    _require_cuda()
+
+    blocks, tpb, d_n, d_mean, d_m2 = _run_stage_one(
+        integrand, n, seed, threads_per_block, max_blocks)
+
+    if final == "host":
+        cuda.synchronize()
+        parts = [Stats(int(round(cn)), cm, cs) for cn, cm, cs in
+                 zip(d_n.copy_to_host(), d_mean.copy_to_host(), d_m2.copy_to_host())]
+        return merge_all(parts)
+
+    if tpb not in _FINAL_KERNELS:
+        _FINAL_KERNELS[tpb] = _build_final_kernel(tpb)
+    d_out = cuda.device_array(3, dtype=np.float64)
+    _FINAL_KERNELS[tpb][1, tpb](d_n, d_mean, d_m2, blocks, d_out)
+    cuda.synchronize()
+    out = d_out.copy_to_host()
+    return Stats(int(round(out[0])), float(out[1]), float(out[2]))
+
+
+def gpu_integral(
+    integrand: Integrand,
+    n: int,
+    seed: int,
+    threads_per_block: int = DEFAULT_THREADS_PER_BLOCK,
+    max_blocks: int = DEFAULT_MAX_BLOCKS,
+    final: str = "device",
+) -> IntegralResult:
+    """Estymata całki, błąd standardowy i przedział ufności z redukcji na GPU."""
+    s = gpu_stats(integrand, n, seed, threads_per_block, max_blocks, final)
+    return integral_from_stats(s, integrand.a, integrand.b)
