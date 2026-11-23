@@ -19,6 +19,9 @@ from numba import cuda, float64
 from numba.cuda.random import create_xoroshiro128p_states, xoroshiro128p_uniform_float64
 from stats import IntegralResult, Stats, integral_from_stats, merge_all
 
+from dataclasses import dataclass
+from time import perf_counter
+
 from functions import INTEGRANDS, Integrand
 
 # Domyślna konfiguracja siatki
@@ -341,6 +344,87 @@ def block_partials(
     return np.column_stack([d_n.copy_to_host(), d_mean.copy_to_host(), d_m2.copy_to_host()])
 
 
+def gpu_stats_timed(
+    integrand: Integrand,
+    n: int,
+    seed: int,
+    threads_per_block: int = DEFAULT_THREADS_PER_BLOCK,
+    max_blocks: int = DEFAULT_MAX_BLOCKS,
+    final: str = "device",
+) -> Tuple[Stats, GpuTimings]:
+    """Liczy statystyki f(x_i) na GPU i mierzy czas każdego etapu.
+
+    Przed każdym odczytem zegara wywoływane jest cuda.synchronize(), bo jądra
+    działają asynchronicznie. Kompilacja jąder następuje przy pierwszym
+    uruchomieniu danej konfiguracji, więc przed pomiarem trzeba wykonać
+    rozgrzewkę (patrz warm_up_gpu w mc_gpu).
+
+    final:
+      device - trójki bloków scala drugie jądro, na CPU wracają 3 liczby
+      host   - na CPU wracają trójki wszystkich bloków i są scalane w kolejności bloków
+    """
+    _validate_reduction(integrand, n, seed, threads_per_block, max_blocks, final)
+    _require_cuda()
+
+    blocks, tpb = launch_config(n, threads_per_block, max_blocks)
+
+    # Budowa obiektów jąder jest tania; kompilacja następuje przy pierwszym uruchomieniu
+    key = (integrand.name, tpb)
+    if key not in _STATS_KERNELS:
+        _STATS_KERNELS[key] = _build_stats_kernel(DEVICE_FUNCS[integrand.name], tpb)
+    if final == "device" and tpb not in _FINAL_KERNELS:
+        _FINAL_KERNELS[tpb] = _build_final_kernel(tpb)
+    stage1 = _STATS_KERNELS[key]
+
+    # Zaczynamy od pustej kolejki karty
+    cuda.synchronize()
+    t0 = perf_counter()
+    d_n = cuda.device_array(blocks, dtype=np.float64)
+    d_mean = cuda.device_array(blocks, dtype=np.float64)
+    d_m2 = cuda.device_array(blocks, dtype=np.float64)
+    d_out = cuda.device_array(3, dtype=np.float64) if final == "device" else None
+    cuda.synchronize()
+    t1 = perf_counter()
+
+    states = create_xoroshiro128p_states(blocks * tpb, seed=seed)
+    cuda.synchronize()
+    t2 = perf_counter()
+
+    stage1[blocks, tpb](states, integrand.a, integrand.b - integrand.a, n,
+                        d_n, d_mean, d_m2)
+    cuda.synchronize()
+    t3 = perf_counter()
+
+    if final == "device":
+        _FINAL_KERNELS[tpb][1, tpb](d_n, d_mean, d_m2, blocks, d_out)
+        cuda.synchronize()
+        t4 = perf_counter()
+        out = d_out.copy_to_host()  # kopia jest synchroniczna
+        t5 = perf_counter()
+        stats = Stats(int(round(out[0])), float(out[1]), float(out[2]))
+        t6 = perf_counter()
+    else:
+        t4 = t3
+        host_n = d_n.copy_to_host()
+        host_mean = d_mean.copy_to_host()
+        host_m2 = d_m2.copy_to_host()
+        t5 = perf_counter()
+        stats = merge_all(Stats(int(round(cn)), cm, cs)
+                          for cn, cm, cs in zip(host_n, host_mean, host_m2))
+        t6 = perf_counter()
+
+    timings = GpuTimings(
+        t_alloc=t1 - t0,
+        t_states=t2 - t1,
+        t_stage1=t3 - t2,
+        t_stage2=t4 - t3,
+        t_transfer=t5 - t4,
+        t_host_merge=t6 - t5,
+        t_total=t6 - t0,
+    )
+    return stats, timings
+
+
 def gpu_stats(
     integrand: Integrand,
     n: int,
@@ -351,32 +435,10 @@ def gpu_stats(
 ) -> Stats:
     """Liczy statystyki f(x_i) dla n próbek wygenerowanych na GPU.
 
-    final:
-      device - trójki bloków scala drugie jądro, na CPU wracają 3 liczby
-      host   - na CPU wracają trójki wszystkich bloków i są scalane w kolejności bloków
-
     Wynik zależy od (seed, threads_per_block, max_blocks, n), bo stan generatora
-    jest przypisany do wątku.
+    jest przypisany do wątku. Szczegóły parametru final: patrz gpu_stats_timed.
     """
-    _validate_reduction(integrand, n, seed, threads_per_block, max_blocks, final)
-    _require_cuda()
-
-    blocks, tpb, d_n, d_mean, d_m2 = _run_stage_one(
-        integrand, n, seed, threads_per_block, max_blocks)
-
-    if final == "host":
-        cuda.synchronize()
-        parts = [Stats(int(round(cn)), cm, cs) for cn, cm, cs in
-                 zip(d_n.copy_to_host(), d_mean.copy_to_host(), d_m2.copy_to_host())]
-        return merge_all(parts)
-
-    if tpb not in _FINAL_KERNELS:
-        _FINAL_KERNELS[tpb] = _build_final_kernel(tpb)
-    d_out = cuda.device_array(3, dtype=np.float64)
-    _FINAL_KERNELS[tpb][1, tpb](d_n, d_mean, d_m2, blocks, d_out)
-    cuda.synchronize()
-    out = d_out.copy_to_host()
-    return Stats(int(round(out[0])), float(out[1]), float(out[2]))
+    return gpu_stats_timed(integrand, n, seed, threads_per_block, max_blocks, final)[0]
 
 
 def gpu_integral(
@@ -390,3 +452,18 @@ def gpu_integral(
     """Estymata całki, błąd standardowy i przedział ufności z redukcji na GPU."""
     s = gpu_stats(integrand, n, seed, threads_per_block, max_blocks, final)
     return integral_from_stats(s, integrand.a, integrand.b)
+
+
+# Redukcja z pomiarem czasu
+
+@dataclass(frozen=True)
+class GpuTimings:
+    """Składowe czasu jednego uruchomienia redukcji na GPU [s]."""
+
+    t_alloc: float       # alokacja tablic wyjściowych w pamięci karty
+    t_states: float      # inicjalizacja stanów generatora
+    t_stage1: float      # jądro 1: generowanie, funkcja, redukcja w bloku
+    t_stage2: float      # jądro 2: scalenie bloków (0 przy final="host")
+    t_transfer: float    # kopia karta -> host
+    t_host_merge: float  # scalenie wyników na CPU
+    t_total: float       # całość, od alokacji do gotowych statystyk
