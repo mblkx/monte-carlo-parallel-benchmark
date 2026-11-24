@@ -28,6 +28,8 @@ Sprawdzenie środowiska: python scripts/check_env.py
 
 - `src/mc_gpu.py`: wersja GPU z pomiarami. Wynik zawiera estymatę, błędy, przedział ufności, przepustowość oraz czasy składowe (alokacja, stany generatora, oba jądra, transfer, scalenie na CPU). Każda granica pomiaru jest poprzedzona synchronizacją karty. Czas rdzenia obejmuje stany generatora i jądra, czas pełny także alokację, transfer i scalenie na CPU.
 
+- `src/gpu_costs.py`: ocena kosztu generatora i funkcji podcałkowej na GPU. Cztery warianty jądra redukcji (pełne, bez funkcji, bez generatora, sama pętla z redukcją) mierzone na przemian z synchronizacją karty; różnice czasów rozdzielają koszt generatora, funkcji i reszty oraz pokazują, czy koszty się sumują. Warianty bez generatora służą tylko do pomiaru czasu, nie do estymacji.
+
 # Testy i użycie
 ```bash
 pytest -m "not slow" -v   # szybkie testy
@@ -80,4 +82,10 @@ Wersja GPU i jej pomiar (wyniki do `data/raw/gpu.csv` oraz rozbicie czasu do
 ```bash
 python src/mc_gpu.py --func sine --n 1e8 --seed 42
 python scripts/run_gpu_benchmark.py --func sine --sizes 1e6 1e7 1e8 --tpb 256
+```
+
+Koszt generatora i funkcji podcałkowej na GPU (wyniki do `data/raw/gpu_costs.csv`):
+
+```bash
+python scripts/run_gpu_cost_benchmark.py --funcs square sine --sizes 1e7 1e8 --tpb 256
 ```
