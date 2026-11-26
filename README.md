@@ -30,6 +30,8 @@ Sprawdzenie środowiska: python scripts/check_env.py
 
 - `src/gpu_costs.py`: ocena kosztu generatora i funkcji podcałkowej na GPU. Cztery warianty jądra redukcji (pełne, bez funkcji, bez generatora, sama pętla z redukcją) mierzone na przemian z synchronizacją karty; różnice czasów rozdzielają koszt generatora, funkcji i reszty oraz pokazują, czy koszty się sumują. Warianty bez generatora służą tylko do pomiaru czasu, nie do estymacji.
 
+- `src/gpu_sweep.py`: wpływ liczby próbek i konfiguracji siatki GPU (wątki na blok, maksymalna liczba bloków) na czas i przepustowość. Konfiguracje są mierzone przeplatane, z synchronizacją karty; narzędzia analizy wskazują najlepszą konfigurację dla każdego rozmiaru i rozmiar, od którego przepustowość przestaje rosnąć. Wynik zależy od siatki, więc estymaty różnych konfiguracji są zgodne tylko statystycznie.
+
 # Testy i użycie
 ```bash
 pytest -m "not slow" -v   # szybkie testy
@@ -88,4 +90,10 @@ Koszt generatora i funkcji podcałkowej na GPU (wyniki do `data/raw/gpu_costs.cs
 
 ```bash
 python scripts/run_gpu_cost_benchmark.py --funcs square sine --sizes 1e7 1e8 --tpb 256
+```
+
+Wpływ rozmiaru problemu i konfiguracji siatki na GPU (wyniki do `data/raw/gpu_sweep.csv`):
+
+```bash
+python scripts/run_gpu_sweep.py --func sine --sizes 1e5 1e6 1e7 1e8
 ```
